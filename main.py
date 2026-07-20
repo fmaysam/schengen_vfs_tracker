@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import time
 import schedule
 import threading
+import re
 from flask import Flask
 from urllib.parse import urljoin
 
@@ -18,7 +19,8 @@ URL = "https://schengenappointments.com/in/london/tourism"
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-last_known_data = {}
+# Track the actual true/false availability to completely block the 5-minute timestamp spam
+last_known_status = {}
 
 def send_telegram_message(message):
     if not BOT_TOKEN or not CHAT_ID:
@@ -37,7 +39,6 @@ def send_telegram_message(message):
         print(f"Network glitch sending text to Telegram: {e}")
 
 def get_official_vfs_link(country_page_url):
-    """Visits the second page to find the direct official VFS application link."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -45,27 +46,60 @@ def get_official_vfs_link(country_page_url):
         response = requests.get(country_page_url, headers=headers, timeout=10)
         if response.status_code == 200:
             sub_soup = BeautifulSoup(response.text, 'html.parser')
-            # Look for links that point to VFS Global or external official sites
             for a_tag in sub_soup.find_all('a', href=True):
                 href = a_tag['href']
                 if "vfsglobal" in href.lower() or "vfs." in href.lower():
                     return href
-            
-            # Fallback: Look for any external link that doesn't belong to schengenappointments
             for a_tag in sub_soup.find_all('a', href=True):
                 href = a_tag['href']
                 if href.startswith("http") and "schengenappointments.com" not in href:
                     return href
     except Exception as e:
-        print(f"Failed to extract official link from subpage {country_page_url}: {e}")
-    
-    # Ultimate fallback: return the subpage link itself if direct link is not found
+        print(f"Failed to extract official link from subpage: {e}")
     return country_page_url
 
+def parse_and_clean_item(item):
+    """Cleans up messy webpage elements and parses country details cleanly."""
+    raw_text = " ".join(item.get_text(separator=" ").strip().split())
+    if not raw_text or "pick city" in raw_text.lower() or "tourist visa" in raw_text.lower():
+        return None
+
+    # Strip away unneeded notification bells and clutter strings
+    clean_text = raw_text.replace("🔔 notify me", "").replace("🔔", "").strip()
+    clean_text = " ".join(clean_text.split())
+
+    words = clean_text.split()
+    if len(words) < 2:
+        return None
+
+    country_key = f"{words[0]} {words[1]}".replace(":", "").strip()
+    is_available = "no availability" not in clean_text.lower()
+
+    # Extract relative page links
+    link_tag = item if item.name == 'a' else item.find('a')
+    apply_link = ""
+    if link_tag and link_tag.get('href'):
+        apply_link = urljoin(URL, link_tag.get('href'))
+
+    # Format the display strings beautifully based on availability
+    if not is_available:
+        parts = re.split(r'(?i)no availability', clean_text)
+        country_name = parts[0].strip()
+        time_info = parts[1].strip() if len(parts) > 1 else ""
+        display_string = f"• {country_name} ({time_info})"
+    else:
+        display_string = f"🌍 *{clean_text}*"
+
+    return {
+        "key": country_key,
+        "available": is_available,
+        "link": apply_link,
+        "display": display_string
+    }
+
 def check_appointments():
-    global last_known_data
+    global last_known_status
     print("\n--- Starting Website Scraping Cycle ---")
-    print(f"Targeting URL: {URL}")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -74,81 +108,65 @@ def check_appointments():
     try:
         response = requests.get(URL, headers=headers, timeout=15)
         if response.status_code != 200:
-            print(f"Server responded with bad HTTP code: {response.status_code}")
+            print(f"Bad HTTP response: {response.status_code}")
             return
             
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Pulls structural table rows or grid div modules
         items = soup.find_all('tr') or soup.find_all('div', class_='country-card') or soup.find_all('li')
         
         if not items:
-            print("Layout parsed but found empty data cards.")
+            print("No layout elements detected.")
             return
 
-        current_data = {}
-        changes_detected = []
-        available_now = []
+        current_status = {}
+        available_output = []
+        unavailable_output = []
+        status_changed = False
 
         for item in items:
-            text_content = " ".join(item.get_text(separator=" ").strip().split())
-            if not text_content or "pick city" in text_content.lower() or "tourist visa" in text_content.lower():
+            parsed = parse_and_clean_item(item)
+            if not parsed:
                 continue
-            
-            words = text_content.split()
-            if len(words) < 2:
-                continue
-                
-            # Create a clean country key name
-            country_key = f"{words[0]} {words[1]}".replace(":", "").strip()
-            current_data[country_key] = text_content
-            
-            # Print to Render logs so you can see the live action
-            print(f"Found Data -> {text_content}")
 
-            # Find the link tag associated with this country
-            link_tag = item if item.name == 'a' else item.find('a')
-            apply_link = ""
-            if link_tag and link_tag.get('href'):
-                relative_href = link_tag.get('href')
-                sub_page_url = urljoin(URL, relative_href)
-                
-                # If this country has open slots, grab the official booking link from page 2
-                if "no availability" not in text_content.lower():
-                    print(f"Slots found for {country_key}! Fetching official link...")
-                    apply_link = get_official_vfs_link(sub_page_url)
+            current_status[parsed["key"]] = parsed["available"]
+            print(f"Processed -> {parsed['display']}")
 
-            # Build notification layout strings
-            if "no availability" not in text_content.lower():
-                link_markdown = f" \n👉 [Click here to Apply]({apply_link})" if apply_link else ""
-                available_now.append(f"🌍 *{text_content}*{link_markdown}")
-            
-            # Track changes on subsequent runs
-            if last_known_data and country_key in last_known_data:
-                if last_known_data[country_key] != text_content:
-                    link_markdown = f" \n👉 [Click here to Apply]({apply_link})" if apply_link else ""
-                    changes_detected.append(f"⚠️ *STATUS CHANGE FOR {country_key.upper()}*:\n`{text_content}`{link_markdown}")
-
-        # First connection initialization
-        if not last_known_data:
-            last_known_data = current_data
-            startup_msg = "🚀 *VFS London Monitor is Live!* Checking every 5 minutes.\n\n"
-            if available_now:
-                startup_msg += "📊 *Current Available Slots Right Now:*\n\n" + "\n\n".join(available_now)
+            # Fetch the direct application link if slots are open
+            if parsed["available"]:
+                if parsed["link"]:
+                    direct_vfs = get_official_vfs_link(parsed["link"])
+                    parsed["display"] += f"\n👉 [Click here to Apply]({direct_vfs})"
+                available_output.append(parsed["display"])
             else:
-                startup_msg += "❌ No appointments available anywhere on the list right now."
-            
-            send_telegram_message(startup_msg)
-            print("Startup report sent to Telegram.")
+                unavailable_output.append(parsed["display"])
+
+            # Detect genuine status changes (Available <-> Not Available)
+            if last_known_status and parsed["key"] in last_known_status:
+                if last_known_status[parsed["key"]] != parsed["available"]:
+                    status_changed = True
+
+        # Build the final stylized text layout
+        message_content = ""
+        if available_output:
+            message_content += "🟢 *Available Appointments:*\n" + "\n\n".join(available_output) + "\n\n"
+        if unavailable_output:
+            message_content += "❌ *Not Available:*\n" + "\n".join(unavailable_output)
+
+        # First deployment run: Send full current status report
+        if not last_known_status:
+            last_known_status = current_status
+            startup_report = "🚀 *VFS London Monitor is Live!* Checking every 5 minutes.\n\n" + message_content
+            send_telegram_message(startup_report)
+            print("Initial status snapshot deployed to Telegram.")
             return
 
-        # Broadcast message if data changes on later runs
-        if changes_detected:
-            alert_msg = "🔔 *VFS UPDATE DETECTED* 🔔\n\n" + "\n\n".join(changes_detected)
-            send_telegram_message(alert_msg)
-            print("Update alert sent to Telegram.")
+        # Subsequent runs: Only trigger if an actual slot opens or closes
+        if status_changed:
+            alert_report = "🔔 *VFS STATUS CHANGE DETECTED* 🔔\n\n" + message_content
+            send_telegram_message(alert_report)
+            print("Status change broadcast delivered to Telegram.")
 
-        last_known_data = current_data
+        last_known_status = current_status
         print("--- Scraping Cycle Finished Successfully ---\n")
     except Exception as e:
         print(f"Error handling task cycle execution: {e}")
