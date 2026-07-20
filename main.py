@@ -19,7 +19,7 @@ URL = "https://schengenappointments.com/in/london/tourism"
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Track the actual true/false availability to completely block the 5-minute timestamp spam
+# Track the actual true/false availability to completely block spam
 last_known_status = {}
 
 def send_telegram_message(message):
@@ -59,12 +59,10 @@ def get_official_vfs_link(country_page_url):
     return country_page_url
 
 def parse_and_clean_item(item):
-    """Cleans up messy webpage elements and parses country details cleanly."""
     raw_text = " ".join(item.get_text(separator=" ").strip().split())
     if not raw_text or "pick city" in raw_text.lower() or "tourist visa" in raw_text.lower():
         return None
 
-    # Strip away unneeded notification bells and clutter strings
     clean_text = raw_text.replace("🔔 notify me", "").replace("🔔", "").strip()
     clean_text = " ".join(clean_text.split())
 
@@ -75,13 +73,11 @@ def parse_and_clean_item(item):
     country_key = f"{words[0]} {words[1]}".replace(":", "").strip()
     is_available = "no availability" not in clean_text.lower()
 
-    # Extract relative page links
     link_tag = item if item.name == 'a' else item.find('a')
     apply_link = ""
     if link_tag and link_tag.get('href'):
         apply_link = urljoin(URL, link_tag.get('href'))
 
-    # Format the display strings beautifully based on availability
     if not is_available:
         parts = re.split(r'(?i)no availability', clean_text)
         country_name = parts[0].strip()
@@ -99,7 +95,7 @@ def parse_and_clean_item(item):
 
 def check_appointments():
     global last_known_status
-    print("\n--- Starting Website Scraping Cycle ---")
+    print("\n--- Starting Website Scraping Cycle (2m Interval) ---")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -129,9 +125,7 @@ def check_appointments():
                 continue
 
             current_status[parsed["key"]] = parsed["available"]
-            print(f"Processed -> {parsed['display']}")
 
-            # Fetch the direct application link if slots are open
             if parsed["available"]:
                 if parsed["link"]:
                     direct_vfs = get_official_vfs_link(parsed["link"])
@@ -140,27 +134,23 @@ def check_appointments():
             else:
                 unavailable_output.append(parsed["display"])
 
-            # Detect genuine status changes (Available <-> Not Available)
             if last_known_status and parsed["key"] in last_known_status:
                 if last_known_status[parsed["key"]] != parsed["available"]:
                     status_changed = True
 
-        # Build the final stylized text layout
         message_content = ""
         if available_output:
             message_content += "🟢 *Available Appointments:*\n" + "\n\n".join(available_output) + "\n\n"
         if unavailable_output:
             message_content += "❌ *Not Available:*\n" + "\n".join(unavailable_output)
 
-        # First deployment run: Send full current status report
         if not last_known_status:
             last_known_status = current_status
-            startup_report = "🚀 *VFS London Monitor is Live!* Checking every 5 minutes.\n\n" + message_content
+            startup_report = "🚀 *VFS London Monitor is Live!* Checking every 2 minutes.\n\n" + message_content
             send_telegram_message(startup_report)
             print("Initial status snapshot deployed to Telegram.")
             return
 
-        # Subsequent runs: Only trigger if an actual slot opens or closes
         if status_changed:
             alert_report = "🔔 *VFS STATUS CHANGE DETECTED* 🔔\n\n" + message_content
             send_telegram_message(alert_report)
@@ -173,7 +163,8 @@ def check_appointments():
 
 def run_scheduler():
     check_appointments()
-    schedule.every(5).minutes.do(check_appointments)
+    # SET TIMER TO 2 MINUTES
+    schedule.every(2).minutes.do(check_appointments)
     while True:
         schedule.run_pending()
         time.sleep(1)
