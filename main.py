@@ -119,9 +119,10 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(1)
 
+# START THE TRACKER ENGINE IMMEDIATELY ON LOAD FOR GUNICORN
+threading.Thread(target=run_scheduler, daemon=True).start()
+
 if __name__ == "__main__":
-    # Spins up tracking logic context inside a secondary engine thread
-    threading.Thread(target=run_scheduler, daemon=True).start()
-    # Runs the frontend app server allocation setup
+    # Runs the frontend app server allocation setup locally if needed
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
