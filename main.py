@@ -36,7 +36,8 @@ def send_telegram_message(message):
 
 def check_appointments():
     global last_known_data
-    print("Scraping target tracker website...")
+    print("\n--- Starting Website Scraping Cycle ---")
+    print(f"Targeting URL: {URL}")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -51,44 +52,62 @@ def check_appointments():
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Pulls structural table rows or grid div modules
-        items = soup.find_all('tr') or soup.find_all('div', class_='country-card')
+        items = soup.find_all('tr') or soup.find_all('div', class_='country-card') or soup.find_all('li')
         
         if not items:
-            print("Layout parsed layout but found empty data cards.")
+            print("Layout parsed but found empty data cards.")
             return
 
         current_data = {}
         changes_detected = []
+        available_now = []
 
         for item in items:
             text_content = " ".join(item.get_text(separator=" ").strip().split())
-            if not text_content:
+            if not text_content or "pick city" in text_content.lower() or "tourist visa" in text_content.lower():
                 continue
             
             words = text_content.split()
             if len(words) < 2:
                 continue
                 
-            # Identifies unique rows by country prefixes safely
-            country_key = f"{words[0]} {words[1]}"
+            # Create a clean country key name
+            country_key = f"{words[0]} {words[1]}".replace(":", "").strip()
             current_data[country_key] = text_content
             
-            if country_key in last_known_data:
-                if last_known_data[country_key] != text_content:
-                    changes_detected.append(f"⚠️ *UPDATE FOR {country_key.upper()}*:\n`{text_content}`")
+            # Print to Render logs so you can see the live action
+            print(f"Found Data -> {text_content}")
 
-        # First connection initialization acknowledgement
+            # Check if this country has active availability
+            if "no availability" not in text_content.lower():
+                available_now.append(f"🌍 *{text_content}*")
+            
+            # Track changes on subsequent runs
+            if last_known_data and country_key in last_known_data:
+                if last_known_data[country_key] != text_content:
+                    changes_detected.append(f"⚠️ *STATUS CHANGE FOR {country_key.upper()}*:\n`{text_content}`")
+
+        # First connection initialization: Send what is currently open right now!
         if not last_known_data:
             last_known_data = current_data
-            send_telegram_message("🚀 *VFS London Monitor is live from the Cloud!* Checking every 5 minutes.")
+            startup_msg = "🚀 *VFS London Monitor is Live!* Checking every 5 minutes.\n\n"
+            if available_now:
+                startup_msg += "📊 *Current Available Slots Right Now:*\n" + "\n".join(available_now)
+            else:
+                startup_msg += "❌ No appointments available anywhere on the list right now."
+            
+            send_telegram_message(startup_msg)
+            print("Startup report sent to Telegram.")
             return
 
-        # Broadcast text message block if data morphs
+        # Broadcast message if data changes on later runs
         if changes_detected:
-            alert_msg = "🔔 *NEW VFS LONDON APPOINTMENT INFO FOUND* 🔔\n\n" + "\n\n".join(changes_detected)
+            alert_msg = "🔔 *VFS UPDATE DETECTED* 🔔\n\n" + "\n\n".join(changes_detected)
             send_telegram_message(alert_msg)
+            print("Update alert sent to Telegram.")
 
         last_known_data = current_data
+        print("--- Scraping Cycle Finished Successfully ---\n")
     except Exception as e:
         print(f"Error handling task cycle execution: {e}")
 
