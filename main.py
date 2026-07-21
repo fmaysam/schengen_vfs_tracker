@@ -85,10 +85,8 @@ def parse_and_clean_item(item):
         display_string = f"• {country_name} ({time_info})"
         comparison_value = "UNAVAILABLE"
     else:
-        # Remove timestamps from comparison string so minute ticks don't trigger alerts,
-        # but keep dates and slot numbers so new dates DO trigger alerts!
-        clean_available_text = re.sub(r'(?i)checked\s+\d+\s+minutes?\s+ago', '', clean_text)
-        clean_available_text = re.sub(r'(?i)checked\s+a\s+minute\s+ago', '', clean_available_text)
+        # Broad regex: Completely remove "checked ... ago" regardless of seconds, minutes, or hours
+        clean_available_text = re.sub(r'(?i)checked\s+.*?\s+ago', '', clean_text)
         comparison_value = " ".join(clean_available_text.split())
         display_string = f"🌍 *{clean_text}*"
 
