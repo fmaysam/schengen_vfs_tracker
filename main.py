@@ -19,7 +19,7 @@ URL = "https://schengenappointments.com/in/london/tourism"
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Track the actual true/false availability to completely block spam
+# Stores country states to detect real slot or availability changes
 last_known_status = {}
 
 def send_telegram_message(message):
@@ -83,14 +83,21 @@ def parse_and_clean_item(item):
         country_name = parts[0].strip()
         time_info = parts[1].strip() if len(parts) > 1 else ""
         display_string = f"• {country_name} ({time_info})"
+        comparison_value = "UNAVAILABLE"
     else:
+        # Remove timestamps from comparison string so minute ticks don't trigger alerts,
+        # but keep dates and slot numbers so new dates DO trigger alerts!
+        clean_available_text = re.sub(r'(?i)checked\s+\d+\s+minutes?\s+ago', '', clean_text)
+        clean_available_text = re.sub(r'(?i)checked\s+a\s+minute\s+ago', '', clean_available_text)
+        comparison_value = " ".join(clean_available_text.split())
         display_string = f"🌍 *{clean_text}*"
 
     return {
         "key": country_key,
         "available": is_available,
         "link": apply_link,
-        "display": display_string
+        "display": display_string,
+        "comparison": comparison_value
     }
 
 def check_appointments():
@@ -124,7 +131,7 @@ def check_appointments():
             if not parsed:
                 continue
 
-            current_status[parsed["key"]] = parsed["available"]
+            current_status[parsed["key"]] = parsed["comparison"]
 
             if parsed["available"]:
                 if parsed["link"]:
@@ -134,8 +141,9 @@ def check_appointments():
             else:
                 unavailable_output.append(parsed["display"])
 
+            # Check if status or appointment details changed
             if last_known_status and parsed["key"] in last_known_status:
-                if last_known_status[parsed["key"]] != parsed["available"]:
+                if last_known_status[parsed["key"]] != parsed["comparison"]:
                     status_changed = True
 
         message_content = ""
@@ -163,7 +171,6 @@ def check_appointments():
 
 def run_scheduler():
     check_appointments()
-    # SET TIMER TO 2 MINUTES
     schedule.every(2).minutes.do(check_appointments)
     while True:
         schedule.run_pending()
